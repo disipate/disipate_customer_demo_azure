@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# macOS
+.DS_Store
+
+# Demo run artifacts — never commit these. A review directory contains the
+# per-run salt, and the salt must not leave the machine it was generated on.
+salt.bin
+*.obfuscation_manifest.json
+demo_output/
+disipate-demo-review/
+
+# Editor
+.idea/
+.vscode/
+*.swp
