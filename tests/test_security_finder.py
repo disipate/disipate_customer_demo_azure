@@ -160,7 +160,12 @@ class TestEmptySecurityGroup(unittest.TestCase):
 
 class TestPublicIpOnUnprotectedVm(unittest.TestCase):
     """A VM with a public IP and no NSG is internet-reachable with no
-    firewall. This is the highest-severity finding."""
+    firewall. This is the highest-severity finding.
+
+    The NIC -> NSG association is resolved from `networkSecurityGroup.id` on
+    the NIC, which is why the fixtures below include a NIC row. Before that
+    fix the rule approximated "has NSG" with "an NSG exists somewhere".
+    """
 
     def test_vm_with_public_ip_no_nsg_high_severity(self):
         inv = [
@@ -170,25 +175,67 @@ class TestPublicIpOnUnprotectedVm(unittest.TestCase):
                 properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
             ),
             row(
+                "Microsoft.Network/networkInterfaces",
+                "/nic1",
+                properties_json='{"ipConfigurations": [{"id": "/ipcfg1"}]}',
+            ),
+            row(
                 "Microsoft.Network/publicIPAddresses",
                 "/ip1",
                 properties_json='{"ipConfiguration": {"id": "/nic1"}}',
             ),
         ]
         findings = detect_findings(inv)
-        # We should see the public_ip_on_unprotected_vm finding
         ids = [f["finding_type"] for f in findings]
         self.assertIn("public_ip_on_unprotected_vm", ids)
         finding = next(f for f in findings if f["finding_type"] == "public_ip_on_unprotected_vm")
         self.assertEqual(finding["severity"], "high")
         self.assertEqual(finding["resource_id"], "/vm1")
+        # no NSG anywhere -> the strong claim is warranted
+        self.assertIn("no network security group", finding["description"])
 
-    def test_vm_with_public_ip_and_nsg_no_finding(self):
+    def test_unrelated_nsg_does_not_suppress_the_rule(self):
+        """The old implementation returned nothing whenever ANY NSG with rules
+        existed anywhere in the inventory — so one NSG on a dev box silenced
+        the rule for every VM in the subscription. This is the regression."""
         inv = [
             row(
                 "Microsoft.Compute/virtualMachines",
                 "/vm1",
                 properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
+            ),
+            row(
+                "Microsoft.Network/networkInterfaces",
+                "/nic1",
+                properties_json='{}',  # NO networkSecurityGroup -> unfiltered
+            ),
+            row(
+                "Microsoft.Network/publicIPAddresses",
+                "/ip1",
+                properties_json='{"ipConfiguration": {"id": "/nic1"}}',
+            ),
+            # An NSG that exists but is attached to something else entirely.
+            row(
+                "Microsoft.Network/networkSecurityGroups",
+                "/nsg-unrelated",
+                properties_json='{"securityRules": [{"direction": "Inbound", "access": "Allow"}]}',
+            ),
+        ]
+        findings = detect_findings(inv)
+        ids = [f["finding_type"] for f in findings]
+        self.assertIn("public_ip_on_unprotected_vm", ids)
+
+    def test_vm_whose_nic_has_nsg_with_custom_rules_no_finding(self):
+        inv = [
+            row(
+                "Microsoft.Compute/virtualMachines",
+                "/vm1",
+                properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
+            ),
+            row(
+                "Microsoft.Network/networkInterfaces",
+                "/nic1",
+                properties_json='{"networkSecurityGroup": {"id": "/nsg1"}}',
             ),
             row(
                 "Microsoft.Network/publicIPAddresses",
@@ -198,7 +245,85 @@ class TestPublicIpOnUnprotectedVm(unittest.TestCase):
             row(
                 "Microsoft.Network/networkSecurityGroups",
                 "/nsg1",
-                properties_json='{"securityRules": [{}]}',
+                properties_json='{"securityRules": [{"direction": "Inbound", "access": "Deny"}]}',
+            ),
+        ]
+        findings = detect_findings(inv)
+        ids = [f["finding_type"] for f in findings]
+        self.assertNotIn("public_ip_on_unprotected_vm", ids)
+
+    def test_vm_whose_nic_has_empty_nsg_is_protected(self):
+        """Azure adds DenyAllInbound (65500, 0.0.0.0/0) to every NSG, so an
+        NSG with no CUSTOM rules still denies internet inbound. The old logic
+        treated an empty NSG as evidence of exposure and a VM with no NSG at
+        all as equally bad — exactly backwards."""
+        inv = [
+            row(
+                "Microsoft.Compute/virtualMachines",
+                "/vm1",
+                properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
+            ),
+            row(
+                "Microsoft.Network/networkInterfaces",
+                "/nic1",
+                properties_json='{"networkSecurityGroup": {"id": "/nsg1"}}',
+            ),
+            row(
+                "Microsoft.Network/publicIPAddresses",
+                "/ip1",
+                properties_json='{"ipConfiguration": {"id": "/nic1"}}',
+            ),
+            row(
+                "Microsoft.Network/networkSecurityGroups",
+                "/nsg1",
+                properties_json='{"securityRules": []}',  # defaults still apply
+            ),
+        ]
+        findings = detect_findings(inv)
+        ids = [f["finding_type"] for f in findings]
+        # not flagged as unprotected ...
+        self.assertNotIn("public_ip_on_unprotected_vm", ids)
+        # ... but still surfaced as a governance gap
+        self.assertIn("empty_security_group", ids)
+
+    def test_nsg_referenced_but_absent_from_inventory_does_not_overclaim(self):
+        """If the NIC references an NSG we never collected, we cannot read its
+        rules. Report, but do not claim there is no filtering."""
+        inv = [
+            row(
+                "Microsoft.Compute/virtualMachines",
+                "/vm1",
+                properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
+            ),
+            row(
+                "Microsoft.Network/networkInterfaces",
+                "/nic1",
+                properties_json='{"networkSecurityGroup": {"id": "/nsg-not-collected"}}',
+            ),
+            row(
+                "Microsoft.Network/publicIPAddresses",
+                "/ip1",
+                properties_json='{"ipConfiguration": {"id": "/nic1"}}',
+            ),
+        ]
+        findings = detect_findings(inv)
+        finding = next(
+            f for f in findings if f["finding_type"] == "public_ip_on_unprotected_vm"
+        )
+        self.assertIn("could not be read", finding["description"])
+        self.assertNotIn("no network security group", finding["description"])
+
+    def test_vm_without_public_ip_not_flagged(self):
+        inv = [
+            row(
+                "Microsoft.Compute/virtualMachines",
+                "/vm1",
+                properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
+            ),
+            row(
+                "Microsoft.Network/networkInterfaces",
+                "/nic1",
+                properties_json='{}',
             ),
         ]
         findings = detect_findings(inv)

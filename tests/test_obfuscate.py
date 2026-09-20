@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 import unittest
+from typing import Dict
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 sys.path.insert(0, SCRIPTS_DIR)
@@ -26,8 +27,20 @@ from obfuscate import (  # noqa: E402
     fingerprint_salt,
     hash_identifier,
     obfuscate_csv,
+    obfuscate_properties,
+    obfuscate_properties_json,
     parse_tags,
 )
+
+# A realistic full ARM path, as Collect-ArmInventory.ps1 emits inside
+# properties_json. The guid and the names are the identifying parts.
+ARM_ID = (
+    "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/"
+    "rg-prod-web/providers/Microsoft.Network/networkInterfaces/nic-web-prod-01"
+)
+SECRET_GUID = "11111111-2222-3333-4444-555555555555"
+SECRET_RG = "rg-prod-web"
+SECRET_NAME = "nic-web-prod-01"
 
 
 class TestHashIdentifier(unittest.TestCase):
@@ -129,6 +142,103 @@ class TestParseTags(unittest.TestCase):
         self.assertEqual(parse_tags({}), {})
 
 
+class TestObfuscateProperties(unittest.TestCase):
+    """properties_json is a raw ARM bag and carries full resource paths
+    nested inside it, so no column-level deny-list can cover it. These tests
+    pin the two guarantees: unlisted keys are dropped, and ARM ids are hashed
+    with the same transform as the resource_id column."""
+
+    def setUp(self):
+        self.salt = b"\x42" * 32
+
+    def test_arm_id_inside_nested_bag_is_hashed(self):
+        props = {"networkProfile": {"networkInterfaces": [{"id": ARM_ID}]}}
+        out = obfuscate_properties(props, self.salt)
+        blob = json.dumps(out)
+        for secret in (SECRET_GUID, SECRET_RG, SECRET_NAME):
+            self.assertNotIn(secret, blob)
+        # and the id is replaced by a hash, not deleted
+        self.assertEqual(
+            out["networkProfile"]["networkInterfaces"][0]["id"],
+            hash_identifier(ARM_ID, self.salt),
+        )
+
+    def test_hashed_nested_id_matches_hashed_resource_id_column(self):
+        """The NIC -> NSG join must still resolve after obfuscation, so a
+        nested reference and the row's resource_id must hash identically."""
+        out = obfuscate_properties({"ipConfiguration": {"id": ARM_ID}}, self.salt)
+        self.assertEqual(out["ipConfiguration"]["id"], hash_identifier(ARM_ID, self.salt))
+
+    def test_unlisted_keys_are_dropped(self):
+        props = {
+            "osProfile": {"adminUsername": "azureuser", "customData": "SECRET"},
+            "provisioningState": "Succeeded",
+            "diskState": "Unattached",
+        }
+        out = obfuscate_properties(props, self.salt)
+        self.assertEqual(out, {"diskState": "Unattached"})
+
+    def test_security_rule_keeps_decision_fields_drops_description(self):
+        props = {
+            "securityRules": [
+                {
+                    "name": "allow-ssh-internet",
+                    "direction": "Inbound",
+                    "access": "Allow",
+                    "priority": 100,
+                    "protocol": "Tcp",
+                    "destinationPortRange": "22",
+                    "description": "opened for contractor j.smith",
+                }
+            ]
+        }
+        out = obfuscate_properties(props, self.salt)
+        rule = out["securityRules"][0]
+        # decision fields retained so the exposure question stays answerable
+        self.assertEqual(rule["direction"], "Inbound")
+        self.assertEqual(rule["access"], "Allow")
+        self.assertEqual(rule["destinationPortRange"], "22")
+        # free text dropped
+        self.assertNotIn("description", rule)
+        self.assertNotIn("j.smith", json.dumps(out))
+
+    def test_non_id_strings_pass_through(self):
+        # values are only preserved when their KEY is allow-listed.
+        props = {"diskState": "Unattached", "managedDisk": {"id": ARM_ID}}
+        out = obfuscate_properties(props, self.salt)
+        self.assertEqual(out["diskState"], "Unattached")
+        self.assertEqual(out["managedDisk"]["id"], hash_identifier(ARM_ID, self.salt))
+        # a non-id string under an allow-listed key is preserved as-is
+        self.assertEqual(obfuscate_properties({"diskState": "Attached"}, self.salt),
+                         {"diskState": "Attached"})
+
+    def test_empty_bag_is_empty_object(self):
+        self.assertEqual(obfuscate_properties({}, self.salt), {})
+        self.assertEqual(obfuscate_properties_json("", self.salt), "{}")
+        self.assertEqual(obfuscate_properties_json(None, self.salt), "{}")
+
+    def test_malformed_json_fails_closed(self):
+        """A bag we cannot parse is exactly the case where we cannot prove
+        it is safe, so it collapses to {} rather than passing through."""
+        self.assertEqual(obfuscate_properties_json("{not json", self.salt), "{}")
+        self.assertEqual(obfuscate_properties_json('"just a string"', self.salt), "{}")
+
+    def test_depth_cap_terminates(self):
+        """A pathological nesting depth must not blow the stack; deeper
+        levels are dropped."""
+        node: Dict[str, object] = {"diskState": "Unattached"}
+        for _ in range(30):
+            node = {"managedDisk": node}
+        out = obfuscate_properties(node, self.salt)
+        # survives without raising, and the deep leaf is gone
+        self.assertNotIn("Unattached", json.dumps(out))
+
+    def test_output_is_valid_json(self):
+        props = {"networkProfile": {"networkInterfaces": [{"id": ARM_ID}]}}
+        s = obfuscate_properties_json(json.dumps(props), self.salt)
+        self.assertIsInstance(json.loads(s), dict)
+
+
 class TestObfuscateCsv(unittest.TestCase):
     """End-to-end: given an input CSV and a salt path, obfuscate_csv writes
     an output CSV with identifier columns hashed, cost columns scaled by
@@ -195,6 +305,78 @@ class TestObfuscateCsv(unittest.TestCase):
         # cost scaled by multiplier
         self.assertEqual(float(row["cost"]), 150.0)
         self.assertEqual(float(row["quantity"]), 15.0)
+
+    def test_tags_json_and_properties_json_are_both_obfuscated(self):
+        """Regression: the ARM collector emits `tags_json` and
+        `properties_json`, neither of which the original column-level rules
+        covered — so tag values and nested ARM resource paths left the tenant
+        verbatim. Assert end-to-end that both are now transformed."""
+        rows = [
+            {
+                "resource_id": ARM_ID,
+                "resource_name": "vm-1",
+                "subscription_id": "sub-1",
+                "resource_group": "rg-prod",
+                "tags_json": json.dumps({"Owner": "jane.doe@contoso.com", "CostCenter": "CC-4417"}),
+                "properties_json": json.dumps(
+                    {"networkProfile": {"networkInterfaces": [{"id": ARM_ID}]}}
+                ),
+                "location": "eastus",
+                "cost": "1.0",
+                "quantity": "1",
+                "sku": "x",
+            }
+        ]
+        self._write_input(rows)
+        obfuscate_csv(
+            self.input_path,
+            self.output_path,
+            self.salt_path,
+            self.manifest_path,
+            multiplier=1.0,
+        )
+        row = self._read_output()[0]
+        blob = json.dumps(row)
+
+        # no real tag values survive
+        self.assertNotIn("jane.doe@contoso.com", blob)
+        self.assertNotIn("CC-4417", blob)
+        # no real ARM identifiers survive anywhere in the row
+        self.assertNotIn(SECRET_GUID, blob)
+        self.assertNotIn(SECRET_RG, blob)
+        self.assertNotIn(SECRET_NAME, blob)
+        # tag keys are still present (finding logic needs the key shape)
+        self.assertIn("Owner", row["tags_json"])
+
+    def test_manifest_discloses_nested_transforms(self):
+        rows = [
+            {
+                "resource_id": "x",
+                "resource_name": "x",
+                "subscription_id": "x",
+                "resource_group": "rg",
+                "tags_json": "{}",
+                "properties_json": "{}",
+                "location": "eastus",
+                "cost": "1.0",
+                "quantity": "1",
+                "sku": "x",
+            }
+        ]
+        self._write_input(rows)
+        obfuscate_csv(
+            self.input_path,
+            self.output_path,
+            self.salt_path,
+            self.manifest_path,
+            multiplier=1.0,
+        )
+        with open(self.manifest_path) as f:
+            manifest = json.load(f)
+        self.assertIn("tags_json", manifest["tag_columns"])
+        self.assertEqual(manifest["properties_transform"]["columns"], ["properties_json"])
+        # still no salt in the manifest
+        self.assertNotIn("salt", manifest)
 
     def test_resource_group_gets_demo_prefix(self):
         rows = [
