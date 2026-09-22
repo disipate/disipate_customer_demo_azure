@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
 """Tests for make_demo_manifest.py — the demo-findings summary builder.
 

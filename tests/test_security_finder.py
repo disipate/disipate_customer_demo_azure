@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
 """Tests for security_finder.py — the security findings detector for the
 Disipate customer demo collector.

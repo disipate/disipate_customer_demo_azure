@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2026 Disipate -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # {{csp_name}} Demo Review
 
 **Run ID:** `{{run_id}}`

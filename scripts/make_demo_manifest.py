@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
 """make_demo_manifest.py — build demo_findings.json for the customer
 demo collector.

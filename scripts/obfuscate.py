@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
 """obfuscate.py — privacy-preserving CSV transformer for the Disipate
 customer demo collector.

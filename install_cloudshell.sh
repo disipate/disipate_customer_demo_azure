@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #
+# Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
 #
 # install_cloudshell.sh — one-shot bootstrap for the Disipate customer demo

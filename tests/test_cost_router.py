@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
 """Tests for cost_router.py — the role-driven cost-routing decision logic
 for the Disipate customer demo collector.

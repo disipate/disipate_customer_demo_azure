@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2026 Disipate -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Disipate Customer Demo for Azure
 
 A read-only Azure collector that produces a cost + security findings report
