@@ -1,10 +1,12 @@
 # Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Disipate. All rights reserved.
+# Proprietary and confidential. Not for distribution.
 """security_finder.py — security findings detector for the Disipate
 customer demo collector.
 
 Pure logic over the inventory CSV. No Azure calls. Six detection rules
-cover the resource types where customers find the most waste AND the most
+cover the resource types where CSPs find the most waste AND the most
 unmonitored attack surface:
 
   orphaned_managed_disk        - disk with no parent VM
@@ -38,20 +40,44 @@ import json
 import sys
 from typing import Any, Dict, List, Optional
 
-# Synthetic rate-card lookup, shared with cost_router.py. Duplicated here
-# rather than imported so this module has no project-internal deps and can
-# be tested in isolation.
-RATE_CARD_HOURLY: Dict[str, float] = {
-    "Microsoft.Compute/virtualMachines": 0.10,
-    "Microsoft.Compute/disks": 0.05,
-    "Microsoft.Network/publicIPAddresses": 0.01,
-    "Microsoft.Network/loadBalancers": 0.03,
-    "Microsoft.Network/natGateways": 0.04,
-    "Microsoft.Network/networkSecurityGroups": 0.00,
-}
-
 HOURS_PER_MONTH = 730
 SEVERITY_ORDER = ("high", "medium", "low")
+
+
+def normalize_resource_type(value: Any) -> str:
+    """Casefold an ARM resource type for comparison.
+
+    Azure Resource Graph returns resource types in LOWERCASE
+    (`microsoft.network/networksecuritygroups`). The Azure SDKs, the portal and
+    most hand-written fixtures use PascalCase (`Microsoft.Network/
+    networkSecurityGroups`). `Collect-ArmInventory.ps1` writes `$r.type`
+    VERBATIM from Resource Graph, so the lowercase form is what actually reaches
+    this module in production.
+
+    Before this existed, every comparison here was `rt == "Microsoft.Compute/
+    disks"` and every test fixture was PascalCase — so the suite passed while
+    the module produced ZERO findings against real inventory. Normalizing at
+    the boundary is the fix; the rate-card lookup is normalized too, since the
+    same mismatch silently zeroed synthetic cost.
+
+    `.lower()` is sufficient: ARM resource types differ only in letter case
+    between the two forms, never in separators or ordering.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+# Rate card keyed by NORMALIZED (lowercased) resource type. Keys are written
+# lowercase deliberately so a future addition cannot reintroduce the case bug.
+RATE_CARD_HOURLY: Dict[str, float] = {
+    "microsoft.compute/virtualmachines": 0.10,
+    "microsoft.compute/disks": 0.05,
+    "microsoft.network/publicipaddresses": 0.01,
+    "microsoft.network/loadbalancers": 0.03,
+    "microsoft.network/natgateways": 0.04,
+    "microsoft.network/networksecuritygroups": 0.00,
+}
 
 
 def _parse_props(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -66,8 +92,39 @@ def _parse_props(row: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def _nic_id_from_ip_configuration_id(value: str) -> str:
+    """Extract the parent NIC id from an ipConfiguration resource id.
+
+    Azure's public-IP properties carry `ipConfiguration.id` as the FULL
+    ipConfiguration path:
+
+        /subscriptions/.../networkInterfaces/<nic>/ipConfigurations/<name>
+
+    but the VM -> NIC map is keyed by the NIC id:
+
+        /subscriptions/.../networkInterfaces/<nic>
+
+    Storing the former and looking it up in the latter never matches, so rule 6
+    produced no findings at all on real inventory. Truncating at
+    `/ipConfigurations/` bridges the two shapes.
+
+    Ids that are already a bare NIC id (as older hand-written fixtures use) pass
+    through unchanged.
+    """
+    if not isinstance(value, str):
+        return ""
+    marker = "/ipConfigurations/"
+    idx = value.find(marker)
+    if idx != -1:
+        return value[:idx]
+    return value
+
+
 def _synthetic_monthly(resource_type: str) -> float:
-    hourly = RATE_CARD_HOURLY.get(resource_type, 0.0)
+    # Normalize the key: the rate card is keyed lowercase, and callers pass the
+    # raw resource_type straight off the inventory row (which Resource Graph
+    # emits lowercase but hand-written CSVs may not).
+    hourly = RATE_CARD_HOURLY.get(normalize_resource_type(resource_type), 0.0)
     return round(hourly * HOURS_PER_MONTH, 2)
 
 
@@ -103,14 +160,18 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     _row_by_id: Dict[str, Dict[str, Any]] = {}
 
     for row in inventory_rows:
-        rt = row.get("resource_type", "")
+        # Normalize once at the boundary. Azure Resource Graph emits lowercase
+        # types while this module's comparisons were written in PascalCase, so
+        # comparing the raw value silently matched nothing (see
+        # normalize_resource_type).
+        rt = normalize_resource_type(row.get("resource_type", ""))
         rid = row.get("resource_id", "")
         props = _parse_props(row)
         if rid:
             _row_by_id[rid] = row
 
         # ---- Rule: orphaned_managed_disk ----
-        if rt == "Microsoft.Compute/disks":
+        if rt == "microsoft.compute/disks":
             state = props.get("diskState", "")
             if state == "Unattached":
                 findings.append(
@@ -123,7 +184,7 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 )
 
         # ---- Rule: orphaned_public_ip ----
-        elif rt == "Microsoft.Network/publicIPAddresses":
+        elif rt == "microsoft.network/publicipaddresses":
             ip_cfg = props.get("ipConfiguration")
             if ip_cfg is None:
                 findings.append(
@@ -135,10 +196,13 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     )
                 )
             elif isinstance(ip_cfg, dict) and ip_cfg.get("id"):
-                ip_to_nic[rid] = ip_cfg["id"]
+                # Azure returns the full ipConfiguration path here, but the
+                # VM->NIC map is keyed by NIC id — truncate so the lookup can
+                # match (see _nic_id_from_ip_configuration_id).
+                ip_to_nic[rid] = _nic_id_from_ip_configuration_id(ip_cfg["id"])
 
         # ---- Rule: orphaned_load_balancer ----
-        elif rt == "Microsoft.Network/loadBalancers":
+        elif rt == "microsoft.network/loadbalancers":
             backends = props.get("backendAddressPools") or []
             if len(backends) == 0:
                 findings.append(
@@ -151,7 +215,7 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 )
 
         # ---- Rule: orphaned_nat_gateway ----
-        elif rt == "Microsoft.Network/natGateways":
+        elif rt == "microsoft.network/natgateways":
             subnets = props.get("subnets") or []
             if len(subnets) == 0:
                 findings.append(
@@ -171,7 +235,7 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
         # rule fires for the right reason — the NSG was created and never
         # configured, which is a governance gap worth reporting — but the
         # description must not claim there is no filtering, because there is.
-        elif rt == "Microsoft.Network/networkSecurityGroups":
+        elif rt == "microsoft.network/networksecuritygroups":
             rules = props.get("securityRules") or []
             if len(rules) == 0:
                 findings.append(
@@ -187,7 +251,7 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 )
 
         # ---- Index VMs for the cross-row rule ----
-        elif rt == "Microsoft.Compute/virtualMachines":
+        elif rt == "microsoft.compute/virtualmachines":
             nic_ids = set()
             net_profile = props.get("networkProfile") or {}
             for nic in net_profile.get("networkInterfaces") or []:
@@ -228,7 +292,10 @@ def detect_findings(inventory_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
         # NSG ids we can actually see, and whether each has custom rules.
         nsgs_with_custom_rules: set = set()
         for row in inventory_rows:
-            if row.get("resource_type", "") != "Microsoft.Network/networkSecurityGroups":
+            if (
+                normalize_resource_type(row.get("resource_type", ""))
+                != "microsoft.network/networksecuritygroups"
+            ):
                 continue
             nsg_id = row.get("resource_id", "")
             if not nsg_id:

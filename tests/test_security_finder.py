@@ -1,9 +1,11 @@
 # Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Disipate. All rights reserved.
+# Proprietary and confidential. Not for distribution.
 """Tests for security_finder.py — the security findings detector for the
 Disipate customer demo collector.
 
-Six detection rules cover the resource types where customers find the most
+Six detection rules cover the resource types where CSPs find the most
 waste AND the most unmonitored attack surface:
 
   orphaned_managed_disk        - disk with no parent VM
@@ -18,6 +20,7 @@ row severity is hardcoded per the rule (not learned); cost is the rate-
 card estimate, flagged cost_is_synthetic=true.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -44,6 +47,171 @@ def row(rt, rid, **extra):
     }
     base.update(extra)
     return base
+
+
+class TestResourceTypeCaseInsensitivity(unittest.TestCase):
+    """Azure Resource Graph returns resource types in LOWERCASE.
+
+    Verified against live Azure 2026-09-22: the Resource Graph API returns
+    `microsoft.network/networksecuritygroups`, not
+    `Microsoft.Network/networkSecurityGroups`. `Collect-ArmInventory.ps1` writes
+    `$r.type` VERBATIM into the CSV (`resource_type = [string]$r.type`), so the
+    lowercase form is what reaches detect_findings().
+
+    Every comparison in this module is written in PascalCase (`rt ==
+    "Microsoft.Compute/disks"`), and the test fixtures all use PascalCase too —
+    which is exactly why the mismatch was invisible: the suite tested a form of
+    the data no collector ever produces.
+
+    Consequence before the fix: EVERY rule silently produced zero findings on
+    real data. Found by running the finder against a live subscription whose
+    inventory contained an unattached disk, an orphaned public IP, a
+    backend-less load balancer, an unassociated NAT gateway and two empty NSGs,
+    and getting `total_findings: 0`.
+    """
+
+    def test_lowercase_disk_type_emits_finding(self):
+        """The exact shape Resource Graph returned for the live rig."""
+        inv = [
+            row(
+                "microsoft.compute/disks",
+                "/d1",
+                properties_json='{"diskState": "Unattached"}',
+            )
+        ]
+        findings = detect_findings(inv)
+        self.assertEqual(
+            len(findings),
+            1,
+            "lowercase resource_type produced no finding — case-sensitive matching regressed",
+        )
+        self.assertEqual(findings[0]["finding_type"], "orphaned_managed_disk")
+
+    def test_lowercase_nsg_type_emits_finding(self):
+        inv = [
+            row(
+                "microsoft.network/networksecuritygroups",
+                "/nsg1",
+                properties_json='{"securityRules": []}',
+            )
+        ]
+        findings = detect_findings(inv)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["finding_type"], "empty_security_group")
+
+    def test_lowercase_public_ip_type_emits_finding(self):
+        inv = [
+            row(
+                "microsoft.network/publicipaddresses",
+                "/pip1",
+                properties_json="{}",
+            )
+        ]
+        findings = detect_findings(inv)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["finding_type"], "orphaned_public_ip")
+
+    def test_mixed_case_still_works(self):
+        """Older fixtures and hand-written CSVs use PascalCase; both must work."""
+        inv = [
+            row("Microsoft.Compute/disks", "/d1", properties_json='{"diskState": "Unattached"}'),
+            row("microsoft.compute/disks", "/d2", properties_json='{"diskState": "Unattached"}'),
+        ]
+        findings = detect_findings(inv)
+        self.assertEqual(len(findings), 2)
+
+    def test_rate_card_lookup_is_case_insensitive(self):
+        """Synthetic cost uses the same type keys, so it was zeroed out too.
+
+        Asserted via a finding, since _synthetic_monthly is private: an
+        orphaned LB's estimated_monthly_savings must be non-zero for the
+        lowercase form. RATE_CARD_HOURLY['Microsoft.Network/loadBalancers'] is
+        0.03/hr, so a month is non-trivial.
+        """
+        inv = [
+            row(
+                "microsoft.network/loadbalancers",
+                "/lb1",
+                properties_json='{"backendAddressPools": []}',
+            )
+        ]
+        findings = detect_findings(inv)
+        self.assertEqual(len(findings), 1)
+        self.assertGreater(
+            findings[0]["estimated_monthly_savings"],
+            0.0,
+            "synthetic cost was zero because the rate-card lookup missed on case",
+        )
+
+    def test_rule6_lowercase_nic_to_vm_chain(self):
+        """The full cross-row chain with lowercase types AND real ARM id shapes.
+
+        Two independent bugs conspired to make rule 6 produce nothing on real
+        inventory, and the old fixtures hid both:
+
+        1. Resource types were compared case-sensitively (PascalCase literals vs
+           Resource Graph's lowercase output).
+        2. `ipConfiguration.id` was stored verbatim into ip_to_nic, but Azure
+           returns the FULL ipConfiguration path
+           (`.../networkInterfaces/nic1/ipConfigurations/internal`) while
+           nic_to_vm is keyed by the bare NIC id
+           (`.../networkInterfaces/nic1`). The lookup could never match.
+
+        The old fixture used a bare `/nic1` as the ipConfiguration id, which is
+        not what Azure returns, so the mismatch was invisible.
+        """
+        nic_id = (
+            "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/nic1"
+        )
+        ipcfg_id = nic_id + "/ipConfigurations/internal"
+        inv = [
+            row(
+                "microsoft.network/publicipaddresses",
+                "/pip1",
+                properties_json=json.dumps({"ipConfiguration": {"id": ipcfg_id}}),
+            ),
+            row(
+                "microsoft.network/networkinterfaces",
+                nic_id,
+                properties_json="{}",  # no networkSecurityGroup -> unprotected
+            ),
+            row(
+                "microsoft.compute/virtualmachines",
+                "/vm1",
+                properties_json=json.dumps(
+                    {"networkProfile": {"networkInterfaces": [{"id": nic_id}]}}
+                ),
+            ),
+        ]
+        findings = detect_findings(inv)
+        r6 = [f for f in findings if f["finding_type"] == "public_ip_on_unprotected_vm"]
+        self.assertEqual(
+            len(r6),
+            1,
+            "real Azure id shape (full ipConfiguration path) did not resolve to a "
+            "rule-6 finding",
+        )
+        self.assertEqual(r6[0]["resource_id"], "/vm1")
+        self.assertIn("no network security group", r6[0]["description"])
+
+    def test_rule6_bare_nic_id_shape_still_works(self):
+        """Older/hand-written fixtures use a bare NIC id; both shapes must work."""
+        inv = [
+            row(
+                "microsoft.network/publicipaddresses",
+                "/pip1",
+                properties_json='{"ipConfiguration": {"id": "/nic1"}}',
+            ),
+            row("microsoft.network/networkinterfaces", "/nic1", properties_json="{}"),
+            row(
+                "microsoft.compute/virtualmachines",
+                "/vm1",
+                properties_json='{"networkProfile": {"networkInterfaces": [{"id": "/nic1"}]}}',
+            ),
+        ]
+        findings = detect_findings(inv)
+        r6 = [f for f in findings if f["finding_type"] == "public_ip_on_unprotected_vm"]
+        self.assertEqual(len(r6), 1)
 
 
 class TestOrphanedDisk(unittest.TestCase):
@@ -208,7 +376,7 @@ class TestPublicIpOnUnprotectedVm(unittest.TestCase):
             row(
                 "Microsoft.Network/networkInterfaces",
                 "/nic1",
-                properties_json='{}',  # NO networkSecurityGroup -> unfiltered
+                properties_json="{}",  # NO networkSecurityGroup -> unfiltered
             ),
             row(
                 "Microsoft.Network/publicIPAddresses",
@@ -308,9 +476,7 @@ class TestPublicIpOnUnprotectedVm(unittest.TestCase):
             ),
         ]
         findings = detect_findings(inv)
-        finding = next(
-            f for f in findings if f["finding_type"] == "public_ip_on_unprotected_vm"
-        )
+        finding = next(f for f in findings if f["finding_type"] == "public_ip_on_unprotected_vm")
         self.assertIn("could not be read", finding["description"])
         self.assertNotIn("no network security group", finding["description"])
 
@@ -324,7 +490,7 @@ class TestPublicIpOnUnprotectedVm(unittest.TestCase):
             row(
                 "Microsoft.Network/networkInterfaces",
                 "/nic1",
-                properties_json='{}',
+                properties_json="{}",
             ),
         ]
         findings = detect_findings(inv)
