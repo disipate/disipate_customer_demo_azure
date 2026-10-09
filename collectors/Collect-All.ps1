@@ -236,7 +236,7 @@ $costBlock = if ($costSummary) {
         "Strategy: **$($costSummary.cost_strategy)**",
         "Resources inventoried: $($costSummary.resources_total)",
         "Resources with actual cost: $($costSummary.resources_with_actual_cost)",
-        "Estimated monthly total: `$$($costSummary.estimated_monthly_cost_total)`"
+        "Estimated monthly total: `$$($costSummary.estimated_monthly_cost_total)"
     ) -join "`n"
 } else {
     "(no cost summary produced)"
@@ -248,7 +248,7 @@ $secBlock = if ($secSummary) {
         "- high: $($secSummary.by_severity.high)",
         "- medium: $($secSummary.by_severity.medium)",
         "- low: $($secSummary.by_severity.low)",
-        "Estimated monthly savings (synthetic): `$$($secSummary.estimated_monthly_savings_total)`"
+        "Estimated monthly savings (synthetic): `$$($secSummary.estimated_monthly_savings_total)"
     ) -join "`n"
 } else {
     "(no security summary produced)"
@@ -266,11 +266,11 @@ $disclaimerBlock = @(
 ) -join "`n"
 
 $signoff = @(
-    "```",
+    '```',
     "approve    upload the artifacts to Disipate",
     "reject     discard artifacts and exit (code 3)",
     "review     re-display this file in the editor",
-    "```"
+    '```'
 ) -join "`n"
 
 # Apply placeholder substitution. Templates use {{name}} form.
@@ -321,7 +321,7 @@ if ($skipPrompt) {
     Write-Host "Review directory: $OutputDir"
     Write-Host "Files ready for upload: $($fileManifest.Count) ($([math]::Round($totalBytes / 1MB, 2)) MB total)"
     if ($costSummary) {
-        Write-Host "Cost strategy: $($costSummary.cost_strategy), est monthly: `$$($costSummary.estimated_monthly_cost_total)`"
+        Write-Host "Cost strategy: $($costSummary.cost_strategy), est monthly: `$$($costSummary.estimated_monthly_cost_total)"
     }
     if ($secSummary) {
         Write-Host "Security findings: $($secSummary.total_findings) (savings `$$($secSummary.estimated_monthly_savings_total)`)"
