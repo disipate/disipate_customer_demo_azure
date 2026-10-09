@@ -94,7 +94,7 @@ foreach ($file in $FilesToUpload) {
                                            else { "application/octet-stream" }
             }
             Invoke-RestMethod -Uri $blobUrl -Method Put -InFile $file -Headers $headers -TimeoutSec 120 | Out-Null
-            Write-Host "[upload]   attempt $attempts: ok"
+            Write-Host "[upload]   attempt ${attempts}: ok"
             $ok = $true
             $results += [ordered]@{
                 file = $file
@@ -108,11 +108,11 @@ foreach ($file in $FilesToUpload) {
             $lastError = "$($_.Exception.Message) (HTTP $code)"
             if ($code -ge 400 -and $code -lt 500) {
                 # 4xx: don't retry. Auth/scope failure won't fix itself.
-                Write-Warning "[upload]   attempt $attempts: 4xx, aborting: $lastError"
+                Write-Warning "[upload]   attempt ${attempts}: 4xx, aborting: $lastError"
                 $partial = $true
                 break
             }
-            Write-Warning "[upload]   attempt $attempts: $lastError; retrying"
+            Write-Warning "[upload]   attempt ${attempts}: $lastError; retrying"
             Start-Sleep -Seconds ([math]::Pow(2, $attempts))
         }
     }
