@@ -178,7 +178,9 @@ function Test-BlobWriteCapability {
             $resp = Invoke-WebRequest -Uri $probeUri -Method Head -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
             if ($resp.StatusCode -lt 400) { return $true }
         } catch {
-            Write-Warning "[blob] SAS probe failed: $($_.Exception.Message)"
+            # The exception message can echo the probe URI, SAS query included.
+            $msg = $_.Exception.Message -replace '(?i)\b(sig|sv|se|sp|spr|sr|sktid|skoid|skt|ske|sks|skv)=[^&\s"]*', '$1=<redacted>'
+            Write-Warning "[blob] SAS probe failed: $msg"
         }
     }
 

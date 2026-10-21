@@ -4,7 +4,9 @@
 .SYNOPSIS
     Orchestrator for the Disipate Azure customer demo collector. Runs the
     full pipeline in sequence: role probe, ARM inventory, cost, security,
-    obfuscation, then pauses for customer review before upload.
+    obfuscation, manifest, then pauses for customer review before upload.
+    The manifest is built before the review gate so that REVIEW.md lists
+    every file the upload stage can send.
 
     Flag matrix:
 
@@ -190,25 +192,61 @@ if (Test-Path $findingsCsv) {
 $summaryPath = Join-Path $inventoryDir "cost_summary.json"
 $securitySummaryPath = Join-Path $inventoryDir "security_summary.json"
 
-# ---- Stage 6: REVIEW.md + inspection gate ----
+# ---- Stage 6: build demo_findings.json ----
+#
+# Built BEFORE the review gate, deliberately. REVIEW.md tells the customer it
+# lists every file that would leave their tenant, so the manifest has to be
+# assembled from the finished upload set. Building the summary after the
+# inspection gate meant one uploaded file was never on the approved list.
 
 Write-Host ""
-Write-Host "----- Stage 6: review -----"
+Write-Host "----- Stage 6: build demo_findings.json -----"
+$demoFindingsPath = Join-Path $OutputDir "demo_findings.json"
+& python3 (Join-Path $scriptsDir "make_demo_manifest.py") `
+    --roles $rolesPath `
+    --cost-summary $summaryPath `
+    --security-summary $securitySummaryPath `
+    --inventory $inventoryPath `
+    --obfuscation-manifest $inventoryManifestPath `
+    --demo-id $runId `
+    --collected-at $collectedAt `
+    --output $demoFindingsPath
+if ($LASTEXITCODE -ne 0) { throw "make_demo_manifest.py failed"; exit 2 }
 
-# Collect the file manifest for REVIEW.md
-$filesToUpload = @()
+# ---- Stage 7: REVIEW.md + inspection gate ----
+
+Write-Host ""
+Write-Host "----- Stage 7: review -----"
+
+# Single source of truth for what leaves this machine: the review gate renders
+# it into REVIEW.md and the upload stage sends exactly this list. Two separate
+# lists is how demo_findings.json came to be uploaded without being disclosed.
+#
+# roles.json is deliberately absent: it carries the raw tenant id, account id
+# and the full subscription list. make_demo_manifest.py reduces those to a
+# salted-hash fingerprint plus capability flags inside demo_findings.json, so
+# the raw file stays on the customer's machine.
+$uploadPaths = @(
+    $inventoryPath
+    (Join-Path $inventoryDir "azure_metrics.csv")
+    $summaryPath
+    $securitySummaryPath
+    $findingsCsv
+    $inventoryManifestPath
+    $findingsManifestPath
+    $demoFindingsPath
+) | Where-Object { Test-Path $_ }
+
 $fileManifest = @()
 $totalBytes = 0
-foreach ($f in @($inventoryPath, (Join-Path $inventoryDir "azure_metrics.csv"), (Join-Path $inventoryDir "roles.json"), $summaryPath, $securitySummaryPath, $findingsCsv, $inventoryManifestPath, $findingsManifestPath)) {
-    if (Test-Path $f) {
-        $size = (Get-Item $f).Length
-        $totalBytes += $size
-        $rows = ""
-        if ($f -like "*.csv") {
-            try { $rows = " ($(($(Import-Csv $f) | Measure-Object).Count) rows)" } catch {}
-        }
-        $fileManifest += "| $($f | Split-Path -Leaf) | $($size) bytes$rows |"
+foreach ($f in $uploadPaths) {
+    $size = (Get-Item $f).Length
+    $totalBytes += $size
+    $rows = ""
+    if ($f -like "*.csv") {
+        try { $rows = " ($(($(Import-Csv $f) | Measure-Object).Count) rows)" } catch {}
     }
+    $fileManifest += "| $($f | Split-Path -Leaf) | $($size) bytes$rows |"
 }
 
 # Load the cost + security summaries for the capability block.
@@ -361,27 +399,15 @@ if ($skipPrompt) {
     }
 }
 
-# ---- Stage 7: build demo_findings.json ----
-
-Write-Host ""
-Write-Host "----- Stage 7: build demo_findings.json -----"
-$demoFindingsPath = Join-Path $OutputDir "demo_findings.json"
-& python3 (Join-Path $scriptsDir "make_demo_manifest.py") `
-    --review-dir $OutputDir `
-    --roles $rolesPath `
-    --cost-summary $summaryPath `
-    --security-summary $securitySummaryPath `
-    --demo-id $runId `
-    --output $demoFindingsPath
-if ($LASTEXITCODE -ne 0) { throw "make_demo_manifest.py failed"; exit 2 }
-
 # ---- Stage 8: upload ----
 
 if ($AutoApprove -or (-not $DryRun)) {
     Write-Host ""
     Write-Host "----- Stage 8: upload -----"
+    # $uploadPaths is the same list REVIEW.md just rendered, so nothing can be
+    # uploaded that the customer was not shown.
     & pwsh -NoProfile -File (Join-Path $collectorsDir "Push-Blob.ps1") `
-        -FilesToUpload @($inventoryPath, (Join-Path $inventoryDir "azure_metrics.csv"), $summaryPath, $securitySummaryPath, $findingsCsv, $inventoryManifestPath, $findingsManifestPath, $demoFindingsPath) `
+        -FilesToUpload $uploadPaths `
         -SasUrl $DisipateSasUrl `
         -DemoId $runId
     if ($LASTEXITCODE -ne 0) { throw "Push-Blob.ps1 failed"; exit 2 }

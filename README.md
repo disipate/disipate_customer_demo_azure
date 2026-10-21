@@ -87,7 +87,7 @@ leaves. You can read the transform in `scripts/obfuscate.py`.
 
 ## Flag matrix
 
-| Invocation | Stages 1–5 | Inspection gate | Stage 6 (upload) |
+| Invocation | Stages 1–6 | Manifest + inspection gate | Upload |
 |---|---|---|---|
 | `Collect-All.ps1` (default) | run | prompt + wait for input | only after approve |
 | `Collect-All.ps1 -AutoApprove` | run | skip prompt | run immediately |

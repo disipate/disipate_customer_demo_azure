@@ -74,10 +74,14 @@ foreach ($file in $FilesToUpload) {
         continue
     }
     $name = Split-Path -Leaf $file
-    $blobUrl = "$baseUrl/$DemoId/$name$sasQuery"
+    $blobTarget = "$baseUrl/$DemoId/$name"
+    $blobUrl = "$blobTarget$sasQuery"
     $size = (Get-Item $file).Length
 
-    Write-Host "[upload] $name ($size bytes) -> $blobUrl"
+    # Log the destination WITHOUT the SAS query string. The token is auth
+    # material; Cloud Shell transcripts, scrollback, and pasted console output
+    # are not a safe place for it.
+    Write-Host "[upload] $name ($size bytes) -> $blobTarget"
 
     $attempts = 0
     $maxAttempts = 3
@@ -105,7 +109,11 @@ foreach ($file in $FilesToUpload) {
             }
         } catch {
             $code = $_.Exception.Response.StatusCode.value__
-            $lastError = "$($_.Exception.Message) (HTTP $code)"
+            # Transport errors sometimes echo the request URI, SAS query and
+            # all. Strip the SAS parameters before this reaches the console or
+            # upload_log.json.
+            $msg = $_.Exception.Message -replace '(?i)\b(sig|sv|se|sp|spr|sr|sktid|skoid|skt|ske|sks|skv)=[^&\s"]*', '$1=<redacted>'
+            $lastError = "$msg (HTTP $code)"
             if ($code -ge 400 -and $code -lt 500) {
                 # 4xx: don't retry. Auth/scope failure won't fix itself.
                 Write-Warning "[upload]   attempt ${attempts}: 4xx, aborting: $lastError"
