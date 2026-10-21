@@ -6,7 +6,7 @@
     full pipeline in sequence: role probe, ARM inventory, cost, security,
     obfuscation, then pauses for customer review before upload.
 
-    Flag matrix (per plan §8.5):
+    Flag matrix:
 
       (no flag)              Inspect mode. Default. Prompt + wait.
       -Inspect               Same as default.
@@ -21,7 +21,7 @@
       1  pre-flight failed (no Az context, missing roles.json, etc.)
       2  collector stage failed
       3  Customer rejected the upload
-      4  non-interactive invocation with no flag (see plan §8.5)
+      4  non-interactive invocation with no flag (see the flag matrix above)
 
 .PARAMETER Scope
     Azure scope to probe. Default: current RG.

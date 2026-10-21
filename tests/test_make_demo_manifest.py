@@ -7,7 +7,7 @@ the end of each run. This is the file Disipate ingests to return
 savings/security estimates to the customer without ever seeing the
 prospect's real environment.
 
-Shape (per plan §10):
+Shape:
   demo_id, collected_at, demo_mode, obfuscation_applied,
   obfuscation_schema_version, tenant_fingerprint, scope,
   capabilities_used {actual_cost, arm_inventory, arm_metrics,

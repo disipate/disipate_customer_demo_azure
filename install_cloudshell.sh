@@ -6,7 +6,7 @@
 # install_cloudshell.sh — one-shot bootstrap for the Disipate customer demo
 # collector. Meant to be run via:
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/gatortim/disipate_customer_demo_azure/main/install_cloudshell.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/disipate/disipate_customer_demo_azure/main/install_cloudshell.sh)
 #
 # Idempotent: safe to re-run after every Cloud Shell session refresh.
 #
@@ -18,12 +18,12 @@
 #
 # Environment overrides:
 #   DISIPATE_REPO_URL     Override the source repo
-#                         (default: gatortim/disipate_customer_demo_azure on GitHub)
+#                         (default: disipate/disipate_customer_demo_azure on GitHub)
 #   DISIPATE_BRANCH       Branch to clone (default: main)
 
 set -euo pipefail
 
-REPO_URL="${DISIPATE_REPO_URL:-https://github.com/gatortim/disipate_customer_demo_azure.git}"
+REPO_URL="${DISIPATE_REPO_URL:-https://github.com/disipate/disipate_customer_demo_azure.git}"
 BRANCH="${DISIPATE_BRANCH:-main}"
 CLOUDDRIVE="${HOME}/clouddrive"
 INSTALL_ROOT="${CLOUDDRIVE}/disipate-customer-demo-azure"

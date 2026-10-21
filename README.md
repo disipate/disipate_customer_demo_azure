@@ -21,7 +21,7 @@ source is meant to be read by your security reviewers.
 
 ```
 # 1. In Azure Cloud Shell, install the collector
-bash <(curl -fsSL https://raw.githubusercontent.com/gatortim/disipate_customer_demo_azure/main/install_cloudshell.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/disipate/disipate_customer_demo_azure/main/install_cloudshell.sh)
 
 # 2. Paste the SAS URL your Disipate contact gave you
 export DISIPATE_SAS_URL="https://account.blob.core.windows.net/container?<sas>"
@@ -142,7 +142,7 @@ Collect-All.ps1 -Scope subscriptions/<sub-id>/resourceGroups/<rg-name>
 ### Locally (development)
 
 ```
-git clone https://github.com/gatortim/disipate_customer_demo_azure.git
+git clone https://github.com/disipate/disipate_customer_demo_azure.git
 cd disipate_customer_demo_azure
 ./install_cloudshell.sh
 ```

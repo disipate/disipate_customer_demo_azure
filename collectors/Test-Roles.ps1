@@ -6,7 +6,7 @@
     root, every management group, and every visible active subscription, then
     produces a capabilities hint for downstream collectors.
 
-    Customer-demo variant of the Mode-C probe. Adds two capability flags
+    Customer-demo variant of the role probe. Adds two capability flags
     on top of the standard set:
 
       can_read_cost_management  - Cost Management Reader/Contributor at the
@@ -268,6 +268,5 @@ $summary = "capabilities: arm_inventory=$can_read_arm_inventory arm_metrics=$can
 Write-Host "[roles] $summary"
 Write-Host "[roles] written to $RolesPath"
 
-# Exit codes per the disipate-msp-collector skill's orchestrator contract.
-# 0 = probe succeeded; manifest written.
+# Exit codes: 0 = probe succeeded; manifest written.
 exit 0

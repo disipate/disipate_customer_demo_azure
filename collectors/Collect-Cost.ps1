@@ -99,8 +99,9 @@ if ($canActual) {
     Write-Host "[cost] can_read_cost_management=true; querying Cost Management API"
 
     try {
-        # Get-AzAccessToken fails under az-token-bridge login (access-token auth
-        # holds no refresh token). Fall back to the harness-exported ARM token.
+        # Get-AzAccessToken cannot re-mint the token when the session was
+        # established with a pre-issued ARM access token (that login mode holds
+        # no refresh token). Fall back to DISIPATE_ARM_TOKEN when it is set.
         if ($env:DISIPATE_ARM_TOKEN) {
             $armToken = [string]$env:DISIPATE_ARM_TOKEN
         } else {
@@ -113,7 +114,7 @@ if ($canActual) {
         $scope = if ($rg) { "subscriptions/$subId/resourceGroups/$($rg.ResourceGroupName)" } else { "subscriptions/$subId" }
 
         # Cost Management grouped-by-ResourceId query. Timeframe MonthToDate.
-        # Mirrors the msp_fallback_r2/Collect-ArmInventory.ps1 -IncludeActualAzureCosts
+        # Mirrors the Collect-ArmInventory.ps1 -IncludeActualAzureCosts
         # path, but RG-scoped and only the resource-grouping query (the demo
         # doesn't need by-service / by-location breakdowns).
         $body = @{

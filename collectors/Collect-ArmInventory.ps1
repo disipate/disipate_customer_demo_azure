@@ -6,13 +6,13 @@
     scope) via Resource Graph, paging past the 1,000-record-per-call limit,
     and writes azure_inventory.csv.
 
-    Customer-demo variant of the standard Mode-C ARM inventory collector.
-    Differences from the msp_fallback_r2 reference:
+    Customer-demo variant of the standard ARM inventory collector.
+    Differences from the reference implementation:
 
       * Default scope is RG (subscriptions/<id>/resourceGroups/<name>),
         not the whole subscription.
-      * VM metrics use raw REST + UrlEncode (the script.ps1 pattern; never
-        Get-AzMetric in Cloud Shell).
+      * VM metrics use raw REST + UrlEncode rather than Get-AzMetric,
+        which is unreliable in Cloud Shell.
       * -DemoMode switch writes to <output>/demo/<run-id>/ and calls
         obfuscate.py against the output before returning.
       * Emits azure_metrics.csv with header-only rows when the operator
@@ -224,9 +224,10 @@ if (Test-Path $rolesPath) {
 
 $metricRows = [System.Collections.Generic.List[object]]::new()
 if ($canReadMetrics) {
-    # Get-AzAccessToken fails under az-token-bridge login (access-token auth holds
-    # no refresh token, so Az can't re-mint without hitting a possibly-blocked app).
-    # Fall back to the ARM token the harness exported (DISIPATE_ARM_TOKEN).
+    # Get-AzAccessToken cannot re-mint the token when the session was established
+    # with a pre-issued ARM access token (no refresh token is held, so Az cannot
+    # re-mint without hitting an app that may be blocked). Fall back to the ARM
+    # token in DISIPATE_ARM_TOKEN when it is set.
     if ($env:DISIPATE_ARM_TOKEN) {
         $armTokenPlain = [string]$env:DISIPATE_ARM_TOKEN
     } else {

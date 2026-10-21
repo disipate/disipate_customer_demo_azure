@@ -1,12 +1,10 @@
 # Copyright (c) 2026 Disipate
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Disipate. All rights reserved.
-# Proprietary and confidential. Not for distribution.
 """security_finder.py — security findings detector for the Disipate
 customer demo collector.
 
 Pure logic over the inventory CSV. No Azure calls. Six detection rules
-cover the resource types where CSPs find the most waste AND the most
+cover the resource types that account for the most waste AND the most
 unmonitored attack surface:
 
   orphaned_managed_disk        - disk with no parent VM

@@ -8,7 +8,7 @@ No I/O. This module is called by Collect-Cost.ps1 (PowerShell) after
 the PowerShell side has fetched the Cost Management API data (if the
 role allows) and dumped it to JSON.
 
-Decision tree (per plan §6):
+Decision tree:
   if roles.can_read_cost_management AND actual_cost_data is non-empty:
       path = "actual"
       each row: actual_cost if available, else fall back to synthetic
